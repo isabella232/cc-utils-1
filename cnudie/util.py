@@ -1,6 +1,8 @@
 import dataclasses
 import io
+import itertools
 import os
+import packaging.version
 import tarfile
 import typing
 
@@ -64,11 +66,11 @@ class LabelDiff:
 class ComponentDiff:
     cidentities_only_left: set = dataclasses.field(default_factory=set)
     cidentities_only_right: set = dataclasses.field(default_factory=set)
-    cpairs_version_changed: list = dataclasses.field(default_factory=list)
     # only set when new component is added/removed
     names_only_left: set = dataclasses.field(default_factory=set)
     names_only_right: set = dataclasses.field(default_factory=set)
     # only set on update
+    cpairs_version_changed: list = dataclasses.field(default_factory=list)
     names_version_changed: set = dataclasses.field(default_factory=set)
 
 
@@ -117,6 +119,281 @@ def diff_component_descriptors(
         right_components=right_components,
         ignore_component_names=ignore_component_names,
     )
+
+
+def diff_component_dependency_versions(
+    left_component: typing.Union[cm.ComponentDescriptor, cm.Component],
+    right_component: typing.Union[cm.ComponentDescriptor, cm.Component],
+    cache_dir=None,
+    resolve_function: typing.Callable[
+        [str, str, str, cm.OciRepositoryContext], cm.Component
+    ] = product.v2.download_component_descriptor_v2,
+):
+    if isinstance(left_component, cm.ComponentDescriptor):
+        left_component = left_component.component
+    if isinstance(right_component, cm.ComponentDescriptor):
+        right_component = right_component.component
+
+    if (
+        left_component.name == right_component.name and
+        left_component.version == right_component.version
+    ):
+        yield right_component, None, None
+        return
+
+    yield from compare_component_refs(
+        parent_component=right_component,
+        left_references=left_component.componentReferences,
+        right_references=right_component.componentReferences,
+        cache_dir=cache_dir,
+        resolve_function=resolve_function,
+    )
+
+    yield None, left_component, right_component
+
+
+def resolve_component_ref(
+    c_ref: cm.ComponentReference,
+    ctx_repo: cm.OciRepositoryContext,
+    cache_dir: typing.Optional[str] = None,
+    resolve_function: typing.Callable[
+        [str, str, str, cm.OciRepositoryContext], cm.Component
+        ] = product.v2.download_component_descriptor_v2,
+) -> cm.Component:
+
+    descriptor = resolve_function(
+        cache_dir=cache_dir,
+        component_name=c_ref.componentName,
+        component_version=c_ref.version,
+        ctx_repo=ctx_repo,
+    )
+    if not descriptor:
+        raise FileNotFoundError(f'component ref not found {c_ref}')
+
+    return descriptor.component
+
+
+def compare_component_refs(
+    parent_component: cm.Component,
+    left_references: typing.Optional[list[cm.ComponentReference]],
+    right_references: typing.Optional[list[cm.ComponentReference]],
+    cache_dir: str = None,
+    resolve_function: typing.Callable = product.v2.download_component_descriptor_v2,
+) -> typing.Generator[
+    tuple[
+        cm.Component,
+        typing.Optional[cm.Component],
+        typing.Optional[cm.Component],
+    ],
+    None,
+    None,
+]:
+    if not (ctx_repo := parent_component.current_repository_ctx()):
+        raise RuntimeError(f'No repo ctx url in parent component {parent_component=}')
+
+    if not left_references and not right_references:
+        return
+
+    # if one list empty -> other list added/removed
+    if not left_references and right_references:
+        yield from [
+            (
+                parent_component,
+                None,
+                resolve_component_ref(
+                    c_ref=rr,
+                    ctx_repo=ctx_repo,
+                    cache_dir=cache_dir,
+                    resolve_function=resolve_function,
+                ),
+            ) for rr in right_references
+        ]
+
+        yield from [
+            compare_component_refs(
+                parent_component=parent_component,
+                left_references=None,
+                right_references=resolve_component_ref(
+                        c_ref=rr,
+                        ctx_repo=ctx_repo,
+                        cache_dir=cache_dir,
+                        resolve_function=resolve_function,
+                    ).componentReferences
+            ) for rr in right_references
+        ]
+        return
+
+    if not right_references and left_references:
+        yield from[
+            (
+                parent_component,
+                resolve_component_ref(
+                    c_ref=lr,
+                    ctx_repo=ctx_repo,
+                    cache_dir=cache_dir,
+                    resolve_function=resolve_function,
+                ),
+                None,
+            ) for lr in left_references
+        ]
+        yield from [
+            compare_component_refs(
+                parent_component=parent_component,
+                left_references=resolve_component_ref(
+                    c_ref=lr,
+                    ctx_repo=ctx_repo,
+                    cache_dir=cache_dir,
+                    resolve_function=resolve_function,
+                ).componentReferences,
+                right_references=None,
+            ) for lr in left_references
+        ]
+        return
+
+    left_ref_names = {r.componentName: r for r in left_references}
+    right_ref_names = {r.componentName: r for r in right_references}
+
+    # left only -> removed
+    left_only_names = left_ref_names.keys() - right_ref_names.keys()
+    for left_name in left_only_names:
+        yield(
+            parent_component,
+            resolve_component_ref(
+                c_ref=left_ref_names[left_name],
+                ctx_repo=ctx_repo,
+                cache_dir=cache_dir,
+                resolve_function=resolve_function,
+            ),
+            None,
+        )
+    # right only -> added
+    right_only_names = right_ref_names.keys() - left_ref_names.keys()
+    for right_name in right_only_names:
+        yield(
+            parent_component,
+            None,
+            resolve_component_ref(
+                c_ref=right_ref_names[right_name],
+                ctx_repo=ctx_repo,
+                cache_dir=cache_dir,
+                resolve_function=resolve_function,
+            ),
+        )
+
+    # since we already handled exclusive left/right components we now check for version changes
+    # only refs which are present in both lists are considered
+    duplicate_c_names = {
+        left_ref_names[ref_name].componentName
+        for ref_name in (left_ref_names.keys() & right_ref_names.keys())
+    }
+
+    for duplicate_c_name in duplicate_c_names:
+        matching_refs_left = [r for r in left_references if r.componentName == duplicate_c_name]
+        matching_refs_right = [r for r in right_references if r.componentName == duplicate_c_name]
+
+        if len(matching_refs_left) == 1 and len(matching_refs_right) == 1:
+            # check for version upgrade/downgrade and match both components against each other
+            left_ref = matching_refs_left[0]
+            right_ref = matching_refs_right[0]
+            if left_ref.version != right_ref.version:
+                left_component = resolve_component_ref(
+                    c_ref=left_ref,
+                    ctx_repo=ctx_repo,
+                    cache_dir=cache_dir,
+                    resolve_function=resolve_function,
+                )
+                right_component = resolve_component_ref(
+                    c_ref=right_ref,
+                    ctx_repo=ctx_repo,
+                    cache_dir=cache_dir,
+                    resolve_function=resolve_function,
+                )
+                yield from compare_component_refs(
+                    parent_component=right_component,
+                    left_references=left_component.componentReferences,
+                    right_references=right_component.componentReferences,
+                )
+                yield parent_component, left_component, right_component
+
+        elif len(matching_refs_left) > 1 and len(matching_refs_right) > 1:
+            left_versions = {packaging.version.parse(lr.version): lr for lr in matching_refs_left}
+            right_versions = {packaging.version.parse(rr.version): rr for rr in matching_refs_right}
+
+            # remove duplicates
+            left_only_versions = left_versions.keys() - right_versions.keys()
+            right_only_versions = right_versions.keys() - left_versions.keys()
+
+            # if empty list after duplicate cleansing -> refs addded/removed
+            if not left_only_versions and right_only_versions:
+                for right_version in right_only_versions:
+                    yield(
+                        parent_component,
+                        None,
+                        resolve_component_ref(
+                            c_ref=right_versions[right_version],
+                            ctx_repo=ctx_repo,
+                            cache_dir=cache_dir,
+                            resolve_function=resolve_function,
+                        ),
+                    )
+            if not right_only_versions and left_only_versions:
+                for left_version in left_only_versions:
+                    yield(
+                        parent_component,
+                        resolve_component_ref(
+                            c_ref=left_versions[left_version],
+                            ctx_repo=ctx_repo,
+                            cache_dir=cache_dir,
+                            resolve_function=resolve_function,
+                        ),
+                        None,
+                    )
+
+            # try to heuristically guess the closest version
+            # each list has at least one element which is not in other list
+            # sort versions and start to match lowest of both lists
+            left_only_versions = sorted(left_only_versions, key=lambda version: version)
+            right_only_versions = sorted(right_only_versions, key=lambda version: version)
+
+            for version_tuple in itertools.zip_longest(left_only_versions, right_only_versions):
+                if not version_tuple[0]:
+                    # left version not defined = added ref
+                    right_component = resolve_component_ref(
+                        c_ref=right_versions[version_tuple[1]],
+                        ctx_repo=ctx_repo,
+                        cache_dir=cache_dir,
+                        resolve_function=resolve_function,
+                    )
+                    yield parent_component, None, right_component
+                elif not version_tuple[1]:
+                    # right version not defined = removed ref
+                    left_component = resolve_component_ref(
+                        c_ref=left_versions[version_tuple[0]],
+                        ctx_repo=ctx_repo,
+                        cache_dir=cache_dir,
+                        resolve_function=resolve_function,
+                    )
+                    yield parent_component, left_component, None
+                else:
+                    # both versions present = up/downgrade
+                    left_component = resolve_component_ref(
+                        c_ref=left_versions[version_tuple[0]],
+                        ctx_repo=ctx_repo,
+                        cache_dir=cache_dir,
+                        resolve_function=resolve_function,
+                    )
+                    right_component = resolve_component_ref(
+                        c_ref=right_versions[version_tuple[1]],
+                        ctx_repo=ctx_repo,
+                        cache_dir=cache_dir,
+                        resolve_function=resolve_function,
+                    )
+                    yield from compare_component_refs(
+                        parent_component=right_component,
+                        left_references=left_component.componentReferences,
+                        right_references=right_component.componentReferences,
+                    )
+                    yield parent_component, left_component, right_component
 
 
 def diff_labels(

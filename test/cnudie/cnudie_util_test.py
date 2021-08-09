@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import io
+import logging
 import pytest
 import tarfile
 import typing
@@ -27,6 +28,11 @@ diff_components = cnudie.util.diff_components
 diff_resources = cnudie.util.diff_resources
 
 
+import ci.log
+ci.log.configure_default_logging()
+
+logger = logging.getLogger(__name__)
+
 def component_id_v2(name: str, version: str):
     return cm.ComponentIdentity(name=name, version=version)
 
@@ -36,13 +42,19 @@ def cid():
     return component_id_v2
 
 
-def comp(name, version) -> cm.Component:
+def comp(name, version, refs=[]) -> cm.Component:
     return cm.Component(
         name=name,
         version=version,
         provider=cm.Provider.INTERNAL,
-        repositoryContexts=[],
-        componentReferences=[],
+        repositoryContexts=[
+            cm.OciRepositoryContext(
+                'test',
+                cm.OciComponentNameMapping.URL_PATH,
+                cm.AccessType.OCI_REGISTRY,
+            )
+        ],
+        componentReferences=refs,
         sources=[],
         resources=[],
         labels=[],
@@ -507,3 +519,144 @@ def test_components_for_multiple_commponents_in_ctf(tmpdir):
         ctf_path=str(ctf_path),
     )
     assert len(res_comp) == 2
+
+
+def c_ref(name, version) -> cm.ComponentReference:
+    return cm.ComponentReference(
+        componentName=name,
+        name=name,
+        version=version,
+        extraIdentity={},
+        labels=[],
+    )
+
+
+def ref_from_component(component: cm.Component):
+    return c_ref(component.name, component.version)
+
+
+def test_something():
+    components = [
+        comp('c1', '1.0.0'),
+        comp('c1', '2.0.0'),
+        comp('c2', '1.0.0'),
+        comp('c3', '1.0.0'),
+        comp('c4', '1.0.0'),
+        comp('c5', '1.0.0'),
+        comp('c5', '2.0.0'),
+    ]
+    c_ids = {f'{c.name}_{c.version}': c for c in components}
+
+    left_parent = c_ids.get('c1_1.0.0')
+    right_parent = c_ids.get('c1_2.0.0')
+
+    def resolve_ref(cache_dir, component_name, component_version, ctx_repo):
+        return cm.ComponentDescriptor([], c_ids.get(f'{component_name}_{component_version}'))
+
+    # test no change
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=left_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(left_parent, None, None)]
+
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(None, left_parent, right_parent)]
+
+    # new component added
+    c = c_ids.get('c2_1.0.0')
+    left_parent.componentReferences = []
+    right_parent.componentReferences = [c_ref(c.name, c.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(right_parent, None, c), (None, left_parent, right_parent)]
+
+    # check both same dependency
+    right_parent.componentReferences = [c_ref(c.name, c.version)]
+    left_parent.componentReferences = [c_ref(c.name, c.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(None, left_parent, right_parent)]
+
+    # check removed component
+    c = c_ids.get('c2_1.0.0')
+    left_parent.componentReferences = [c_ref(c.name, c.version)]
+    right_parent.componentReferences = []
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(right_parent, c , None),(None, left_parent, right_parent)]
+
+    # check two added components
+    c = c_ids.get('c2_1.0.0')
+    c2 = c_ids.get('c3_1.0.0')
+    left_parent.componentReferences = [c_ref(c.name, c.version), c_ref(c2.name, c2.version)]
+    right_parent.componentReferences = []
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(right_parent, c, None), (right_parent, c2, None), (None, left_parent, right_parent)]
+
+    # check one added components with more components
+    c = c_ids.get('c2_1.0.0')
+    c2 = c_ids.get('c3_1.0.0')
+    left_parent.componentReferences = [c_ref(c.name, c.version), c_ref(c2.name, c2.version)]
+    right_parent.componentReferences = [c_ref(c.name, c.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(right_parent, c2, None), (None, left_parent, right_parent)]
+
+    # check one added components with more components
+    c = c_ids.get('c2_1.0.0')
+    c2 = c_ids.get('c3_1.0.0')
+    left_parent.componentReferences = [c_ref(c.name, c.version), c_ref(c2.name, c2.version)]
+    right_parent.componentReferences = [c_ref(c.name, c.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(right_parent, c2, None), (None, left_parent, right_parent)]
+
+    # check two added components via ref
+    c = c_ids.get('c2_1.0.0')
+    c2 = c_ids.get('c3_1.0.0')
+    c.componentReferences = [c_ref(c2.name,c2.version)]
+    print(c)
+    left_parent.componentReferences = [c_ref(c.name, c.version)]
+    right_parent.componentReferences = []
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [(right_parent, c2, None), (None, left_parent, right_parent)]
+
+    # right_c = c[0]
+    # left_c = c[1]
+    # diff = cnudie.util.diff_component_dependency_versions(
+    #     left_component=left_c,
+    #     right_component=right_c,
+    #     resolve_function=resolve_ref,
+    # )
+
+    l = list(diff)
+    # logger.info(l)
