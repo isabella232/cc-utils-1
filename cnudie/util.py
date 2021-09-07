@@ -13,6 +13,13 @@ import gci.componentmodel as cm
 import product.v2
 
 
+@dataclasses.dataclass
+class ComponentDiffEntry:
+    parent: typing.Optional[cm.Component]
+    left: typing.Optional[cm.Component]
+    right: typing.Optional[cm.Component]
+
+
 def to_component(*args, **kwargs) -> cm.Component:
     if not kwargs and len(args) == 1:
         component = args[0]
@@ -82,7 +89,7 @@ def diff_component_descriptors(
     cache_dir=None,
     components_resolv_func: typing.Callable[
         [cm.ComponentDescriptor, str], typing.Sequence[cm.Component]
-    ]=product.v2.components,
+    ] = product.v2.components,
 ) -> ComponentDiff:
     if isinstance(left_component, cm.ComponentDescriptor):
         left_component = left_component.component
@@ -128,7 +135,12 @@ def diff_component_dependency_versions(
     resolve_function: typing.Callable[
         [str, str, str, cm.OciRepositoryContext], cm.Component
     ] = product.v2.download_component_descriptor_v2,
-):
+) -> typing.Generator[
+    ComponentDiffEntry,
+    None,
+    None,
+]:
+
     if isinstance(left_component, cm.ComponentDescriptor):
         left_component = left_component.component
     if isinstance(right_component, cm.ComponentDescriptor):
@@ -138,18 +150,17 @@ def diff_component_dependency_versions(
         left_component.name == right_component.name and
         left_component.version == right_component.version
     ):
-        yield right_component, None, None
+        yield ComponentDiffEntry(parent=right_component, left=None, right=None)
         return
 
     yield from compare_component_refs(
-        parent_component=right_component,
-        left_references=left_component.componentReferences,
-        right_references=right_component.componentReferences,
+        left_component=left_component,
+        right_component=right_component,
         cache_dir=cache_dir,
         resolve_function=resolve_function,
     )
 
-    yield None, left_component, right_component
+    yield ComponentDiffEntry(parent=None, left=left_component, right=right_component)
 
 
 def resolve_component_ref(
@@ -174,80 +185,86 @@ def resolve_component_ref(
 
 
 def compare_component_refs(
-    parent_component: cm.Component,
-    left_references: typing.Optional[list[cm.ComponentReference]],
-    right_references: typing.Optional[list[cm.ComponentReference]],
+    left_component: typing.Optional[cm.Component],
+    right_component: typing.Optional[cm.Component],
     cache_dir: str = None,
     resolve_function: typing.Callable = product.v2.download_component_descriptor_v2,
 ) -> typing.Generator[
-    tuple[
-        cm.Component,
-        typing.Optional[cm.Component],
-        typing.Optional[cm.Component],
-    ],
+    ComponentDiffEntry,
     None,
     None,
 ]:
-    if not (ctx_repo := parent_component.current_repository_ctx()):
-        raise RuntimeError(f'No repo ctx url in parent component {parent_component=}')
-
-    if not left_references and not right_references:
+    if not left_component and not right_component:
         return
 
-    # if one list empty -> other list added/removed
+    if right_component:
+        right_references = right_component.componentReferences
+        right_ctx_repo = right_component.current_repository_ctx()
+    else:
+        right_references = []
+
+    if left_component:
+        left_references = left_component.componentReferences
+        left_ctx_repo = left_component.current_repository_ctx()
+    else:
+        left_references = []
+
+    # if one component is none -> other list added/removed
+    # first check if only right component == all added
     if not left_references and right_references:
-        yield from [
-            (
-                parent_component,
-                None,
-                resolve_component_ref(
+        yield from (
+            ComponentDiffEntry(
+                parent=right_component,
+                left=None,
+                right=resolve_component_ref(
                     c_ref=rr,
-                    ctx_repo=ctx_repo,
+                    ctx_repo=right_ctx_repo,
                     cache_dir=cache_dir,
                     resolve_function=resolve_function,
                 ),
-            ) for rr in right_references
-        ]
+             ) for rr in right_references
+        )
 
-        yield from [
-            compare_component_refs(
-                parent_component=parent_component,
-                left_references=None,
-                right_references=resolve_component_ref(
-                        c_ref=rr,
-                        ctx_repo=ctx_repo,
-                        cache_dir=cache_dir,
-                        resolve_function=resolve_function,
-                    ).componentReferences
-            ) for rr in right_references
-        ]
+        for rr in right_references:
+            r = resolve_component_ref(
+                c_ref=rr,
+                ctx_repo=right_ctx_repo,
+                cache_dir=cache_dir,
+                resolve_function=resolve_function,
+            )
+            yield from compare_component_refs(
+                right_component=r,
+                left_component=None,
+                resolve_function=resolve_function,
+            )
         return
 
     if not right_references and left_references:
-        yield from[
-            (
-                parent_component,
-                resolve_component_ref(
+        yield from (
+            ComponentDiffEntry(
+                parent=left_component,
+                left=resolve_component_ref(
                     c_ref=lr,
-                    ctx_repo=ctx_repo,
+                    ctx_repo=left_ctx_repo,
                     cache_dir=cache_dir,
                     resolve_function=resolve_function,
                 ),
-                None,
+                right=None,
             ) for lr in left_references
-        ]
-        yield from [
-            compare_component_refs(
-                parent_component=parent_component,
-                left_references=resolve_component_ref(
-                    c_ref=lr,
-                    ctx_repo=ctx_repo,
-                    cache_dir=cache_dir,
-                    resolve_function=resolve_function,
-                ).componentReferences,
-                right_references=None,
-            ) for lr in left_references
-        ]
+        )
+
+        for lr in left_references:
+            r = resolve_component_ref(
+                c_ref=lr,
+                ctx_repo=left_ctx_repo,
+                cache_dir=cache_dir,
+                resolve_function=resolve_function,
+            )
+            yield from compare_component_refs(
+                left_component=r,
+                right_component=None,
+                resolve_function=resolve_function,
+            )
         return
 
     left_ref_names = {r.componentName: r for r in left_references}
@@ -256,29 +273,35 @@ def compare_component_refs(
     # left only -> removed
     left_only_names = left_ref_names.keys() - right_ref_names.keys()
     for left_name in left_only_names:
-        yield(
-            parent_component,
-            resolve_component_ref(
-                c_ref=left_ref_names[left_name],
-                ctx_repo=ctx_repo,
-                cache_dir=cache_dir,
-                resolve_function=resolve_function,
-            ),
-            None,
-        )
+        for left_ref in left_references:
+            if left_name == left_ref.name:
+                yield ComponentDiffEntry(
+                    parent=left_component,
+                    left=resolve_component_ref(
+                        c_ref=left_ref,
+                        ctx_repo=left_ctx_repo,
+                        cache_dir=cache_dir,
+                        resolve_function=resolve_function,
+                    ),
+                    right=None,
+                )
+
     # right only -> added
     right_only_names = right_ref_names.keys() - left_ref_names.keys()
     for right_name in right_only_names:
-        yield(
-            parent_component,
-            None,
-            resolve_component_ref(
-                c_ref=right_ref_names[right_name],
-                ctx_repo=ctx_repo,
-                cache_dir=cache_dir,
-                resolve_function=resolve_function,
-            ),
-        )
+        for right_ref in right_references:
+            if right_name == right_ref.name:
+                right_comp = resolve_component_ref(
+                    c_ref=right_ref_names[right_name],
+                    ctx_repo=right_ctx_repo,
+                    cache_dir=cache_dir,
+                    resolve_function=resolve_function,
+                )
+                yield ComponentDiffEntry(
+                    parent=right_component,
+                    left=None,
+                    right=right_comp,
+                )
 
     # since we already handled exclusive left/right components we now check for version changes
     # only refs which are present in both lists are considered
@@ -286,7 +309,6 @@ def compare_component_refs(
         left_ref_names[ref_name].componentName
         for ref_name in (left_ref_names.keys() & right_ref_names.keys())
     }
-
     for duplicate_c_name in duplicate_c_names:
         matching_refs_left = [r for r in left_references if r.componentName == duplicate_c_name]
         matching_refs_right = [r for r in right_references if r.componentName == duplicate_c_name]
@@ -296,26 +318,26 @@ def compare_component_refs(
             left_ref = matching_refs_left[0]
             right_ref = matching_refs_right[0]
             if left_ref.version != right_ref.version:
-                left_component = resolve_component_ref(
+                left_comp = resolve_component_ref(
                     c_ref=left_ref,
-                    ctx_repo=ctx_repo,
+                    ctx_repo=left_ctx_repo,
                     cache_dir=cache_dir,
                     resolve_function=resolve_function,
                 )
-                right_component = resolve_component_ref(
+                right_comp = resolve_component_ref(
                     c_ref=right_ref,
-                    ctx_repo=ctx_repo,
+                    ctx_repo=right_ctx_repo,
                     cache_dir=cache_dir,
                     resolve_function=resolve_function,
                 )
                 yield from compare_component_refs(
-                    parent_component=right_component,
-                    left_references=left_component.componentReferences,
-                    right_references=right_component.componentReferences,
+                    left_component=left_comp,
+                    right_component=right_comp,
+                    resolve_function=resolve_function,
                 )
-                yield parent_component, left_component, right_component
+                yield ComponentDiffEntry(parent=right_component, left=left_comp, right=right_comp)
 
-        elif len(matching_refs_left) > 1 and len(matching_refs_right) > 1:
+        elif len(matching_refs_left) >= 1 and len(matching_refs_right) >= 1:
             left_versions = {packaging.version.parse(lr.version): lr for lr in matching_refs_left}
             right_versions = {packaging.version.parse(rr.version): rr for rr in matching_refs_right}
 
@@ -323,30 +345,30 @@ def compare_component_refs(
             left_only_versions = left_versions.keys() - right_versions.keys()
             right_only_versions = right_versions.keys() - left_versions.keys()
 
-            # if empty list after duplicate cleansing -> refs addded/removed
+            # if empty list after duplicate cleansing -> refs added/removed
             if not left_only_versions and right_only_versions:
                 for right_version in right_only_versions:
-                    yield(
-                        parent_component,
-                        None,
-                        resolve_component_ref(
-                            c_ref=right_versions[right_version],
-                            ctx_repo=ctx_repo,
+                    yield ComponentDiffEntry(
+                        parent=right_component,
+                        right=resolve_component_ref(
+                            c_ref=left_versions[right_version],
+                            ctx_repo=left_ctx_repo,
                             cache_dir=cache_dir,
                             resolve_function=resolve_function,
                         ),
+                        left=None,
                     )
             if not right_only_versions and left_only_versions:
                 for left_version in left_only_versions:
-                    yield(
-                        parent_component,
-                        resolve_component_ref(
+                    yield ComponentDiffEntry(
+                        parent=left_component,
+                        left=resolve_component_ref(
                             c_ref=left_versions[left_version],
-                            ctx_repo=ctx_repo,
+                            ctx_repo=left_ctx_repo,
                             cache_dir=cache_dir,
                             resolve_function=resolve_function,
                         ),
-                        None,
+                        right=None,
                     )
 
             # try to heuristically guess the closest version
@@ -358,42 +380,46 @@ def compare_component_refs(
             for version_tuple in itertools.zip_longest(left_only_versions, right_only_versions):
                 if not version_tuple[0]:
                     # left version not defined = added ref
-                    right_component = resolve_component_ref(
+                    right_comp = resolve_component_ref(
                         c_ref=right_versions[version_tuple[1]],
-                        ctx_repo=ctx_repo,
+                        ctx_repo=right_ctx_repo,
                         cache_dir=cache_dir,
                         resolve_function=resolve_function,
                     )
-                    yield parent_component, None, right_component
+                    yield ComponentDiffEntry(parent=right_component,left=None, right=right_comp)
                 elif not version_tuple[1]:
                     # right version not defined = removed ref
-                    left_component = resolve_component_ref(
+                    left_comp = resolve_component_ref(
                         c_ref=left_versions[version_tuple[0]],
-                        ctx_repo=ctx_repo,
+                        ctx_repo=left_ctx_repo,
                         cache_dir=cache_dir,
                         resolve_function=resolve_function,
                     )
-                    yield parent_component, left_component, None
+                    yield ComponentDiffEntry(parent=left_comp,left=left_comp, right=None)
                 else:
                     # both versions present = up/downgrade
-                    left_component = resolve_component_ref(
+                    left_comp = resolve_component_ref(
                         c_ref=left_versions[version_tuple[0]],
-                        ctx_repo=ctx_repo,
+                        ctx_repo=left_ctx_repo,
                         cache_dir=cache_dir,
                         resolve_function=resolve_function,
                     )
-                    right_component = resolve_component_ref(
+                    right_comp = resolve_component_ref(
                         c_ref=right_versions[version_tuple[1]],
-                        ctx_repo=ctx_repo,
+                        ctx_repo=right_ctx_repo,
                         cache_dir=cache_dir,
                         resolve_function=resolve_function,
                     )
                     yield from compare_component_refs(
-                        parent_component=right_component,
-                        left_references=left_component.componentReferences,
-                        right_references=right_component.componentReferences,
+                        left_component=left_comp,
+                        right_component=right_comp,
+                        resolve_function=resolve_function,
                     )
-                    yield parent_component, left_component, right_component
+                    yield ComponentDiffEntry(
+                        parent=right_component,
+                        left=left_comp,
+                        right=right_comp,
+                    )
 
 
 def diff_labels(

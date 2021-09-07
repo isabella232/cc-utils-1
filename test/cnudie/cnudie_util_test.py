@@ -540,123 +540,238 @@ def test_something():
         comp('c1', '1.0.0'),
         comp('c1', '2.0.0'),
         comp('c2', '1.0.0'),
+        comp('c2', '2.0.0'),
+        comp('c2', '3.0.0'),
         comp('c3', '1.0.0'),
-        comp('c4', '1.0.0'),
+        comp('c4', '1.0.0', [c_ref('c5', '1.0.0')]),
         comp('c5', '1.0.0'),
         comp('c5', '2.0.0'),
     ]
     c_ids = {f'{c.name}_{c.version}': c for c in components}
+    c1_1 = c_ids.get('c1_1.0.0')
+    c1_2 = c_ids.get('c1_2.0.0')
+    c2 = c_ids.get('c2_1.0.0')
+    c2_2 = c_ids.get('c2_2.0.0')
+    c2_3 = c_ids.get('c2_3.0.0')
+    c3 = c_ids.get('c3_1.0.0')
+    c4 = c_ids.get('c4_1.0.0')
+    c5 = c_ids.get('c5_1.0.0')
 
-    left_parent = c_ids.get('c1_1.0.0')
-    right_parent = c_ids.get('c1_2.0.0')
+    left_parent = c_ids['c1_1.0.0']
+    right_parent = c_ids['c1_2.0.0']
 
     def resolve_ref(cache_dir, component_name, component_version, ctx_repo):
         return cm.ComponentDescriptor([], c_ids.get(f'{component_name}_{component_version}'))
 
-    # test no change
-    diff = cnudie.util.diff_component_dependency_versions(
-        left_component=left_parent,
-        right_component=left_parent,
-        resolve_function=resolve_ref,
-    )
-    assert list(diff) == [(left_parent, None, None)]
-
-    diff = cnudie.util.diff_component_dependency_versions(
-        left_component=left_parent,
-        right_component=right_parent,
-        resolve_function=resolve_ref,
-    )
-    assert list(diff) == [(None, left_parent, right_parent)]
-
-    # new component added
-    c = c_ids.get('c2_1.0.0')
-    left_parent.componentReferences = []
-    right_parent.componentReferences = [c_ref(c.name, c.version)]
-    diff = cnudie.util.diff_component_dependency_versions(
-        left_component=left_parent,
-        right_component=right_parent,
-        resolve_function=resolve_ref,
-    )
-    assert list(diff) == [(right_parent, None, c), (None, left_parent, right_parent)]
+    def cde(parent, left, right) -> cnudie.util.ComponentDiffEntry:
+        return cnudie.util.ComponentDiffEntry(parent, left, right)
 
     # check both same dependency
-    right_parent.componentReferences = [c_ref(c.name, c.version)]
-    left_parent.componentReferences = [c_ref(c.name, c.version)]
+    right_parent.componentReferences = [c_ref(c2.name, c2.version)]
+    left_parent.componentReferences = [c_ref(c2.name, c2.version)]
     diff = cnudie.util.diff_component_dependency_versions(
         left_component=left_parent,
         right_component=right_parent,
         resolve_function=resolve_ref,
     )
-    assert list(diff) == [(None, left_parent, right_parent)]
+    assert list(diff) == [cde(None, left_parent, right_parent)]
 
     # check removed component
-    c = c_ids.get('c2_1.0.0')
-    left_parent.componentReferences = [c_ref(c.name, c.version)]
+    left_parent.componentReferences = [c_ref(c2.name, c2.version)]
     right_parent.componentReferences = []
     diff = cnudie.util.diff_component_dependency_versions(
         left_component=left_parent,
         right_component=right_parent,
         resolve_function=resolve_ref,
     )
-    assert list(diff) == [(right_parent, c , None),(None, left_parent, right_parent)]
+    assert list(diff) == [
+        cde(left_parent, c2, None),
+        cde(None, left_parent, right_parent),
+    ]
 
-    # check two added components
-    c = c_ids.get('c2_1.0.0')
-    c2 = c_ids.get('c3_1.0.0')
-    left_parent.componentReferences = [c_ref(c.name, c.version), c_ref(c2.name, c2.version)]
+    # check added component
+    left_parent.componentReferences = []
+    right_parent.componentReferences = [c_ref(c3.name, c3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(right_parent, None, c3),
+        cde(None, left_parent, right_parent),
+    ]
+
+    # check one added and one removed component
+    left_parent.componentReferences = [c_ref(c2.name, c2.version)]
+    right_parent.componentReferences = [c_ref(c3.name, c3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(left_parent, c2, None),
+        cde(right_parent, None, c3),
+        cde(None, left_parent, right_parent),
+    ]
+
+    # check version upgrade
+    left_parent.componentReferences = [c_ref(c2.name, c2.version)]
+    right_parent.componentReferences = [c_ref(c2_2.name, c2_2.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(right_parent, c2, c2_2),
+        cde(None, left_parent, right_parent),
+    ]
+
+    # check version downgrade
+    left_parent.componentReferences = [c_ref(c2_2.name, c2_2.version)]
+    right_parent.componentReferences = [c_ref(c2.name, c2.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(right_parent, c2_2, c2),
+        cde(None, left_parent, right_parent),
+    ]
+
+    # check two added components left
+    left_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c3.name, c3.version)]
     right_parent.componentReferences = []
     diff = cnudie.util.diff_component_dependency_versions(
         left_component=left_parent,
         right_component=right_parent,
         resolve_function=resolve_ref,
     )
-    assert list(diff) == [(right_parent, c, None), (right_parent, c2, None), (None, left_parent, right_parent)]
+    assert list(diff) == [
+        cde(left_parent,c2,None),
+        cde(left_parent,c3, None),
+        cde(None, left_parent, right_parent),
+    ]
 
-    # check one added components with more components
-    c = c_ids.get('c2_1.0.0')
-    c2 = c_ids.get('c3_1.0.0')
-    left_parent.componentReferences = [c_ref(c.name, c.version), c_ref(c2.name, c2.version)]
-    right_parent.componentReferences = [c_ref(c.name, c.version)]
+    # check two added components right
+    left_parent.componentReferences = []
+    right_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c3.name, c3.version)]
     diff = cnudie.util.diff_component_dependency_versions(
         left_component=left_parent,
         right_component=right_parent,
         resolve_function=resolve_ref,
     )
-    assert list(diff) == [(right_parent, c2, None), (None, left_parent, right_parent)]
+    assert list(diff) == [
+        cde(right_parent, None, c2),
+        cde(right_parent, None, c3),
+        cde(None, left_parent, right_parent),
+    ]
 
-    # check one added components with more components
-    c = c_ids.get('c2_1.0.0')
-    c2 = c_ids.get('c3_1.0.0')
-    left_parent.componentReferences = [c_ref(c.name, c.version), c_ref(c2.name, c2.version)]
-    right_parent.componentReferences = [c_ref(c.name, c.version)]
+    # check one added components with some traffic left
+    left_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c3.name, c3.version)]
+    right_parent.componentReferences = [c_ref(c2.name, c2.version)]
     diff = cnudie.util.diff_component_dependency_versions(
         left_component=left_parent,
         right_component=right_parent,
         resolve_function=resolve_ref,
     )
-    assert list(diff) == [(right_parent, c2, None), (None, left_parent, right_parent)]
+    assert list(diff) == [
+        cde(left_parent,c3, None),
+        cde(None, left_parent, right_parent),
+    ]
+    # check one added components with some traffic right
+    left_parent.componentReferences = [c_ref(c2.name, c2.version)]
+    right_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c3.name, c3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(right_parent, None, c3),
+        cde(None, left_parent, right_parent),
+    ]
 
-    # check two added components via ref
-    c = c_ids.get('c2_1.0.0')
-    c2 = c_ids.get('c3_1.0.0')
-    c.componentReferences = [c_ref(c2.name,c2.version)]
-    print(c)
-    left_parent.componentReferences = [c_ref(c.name, c.version)]
+    # check two added same components
+    left_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c3.name, c3.version)]
+    right_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c3.name, c3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [cde(None, left_parent, right_parent)]
+
+    # check two added same components with different versions
+    left_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c2_2.name, c2_2.version)]
+    right_parent.componentReferences = [c_ref(c2_2.name, c2_2.version), c_ref(c2_3.name, c2_3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(right_parent, c2, c2_3),
+        cde(None, left_parent, right_parent),
+    ]
+
+    # check two added same components with different versions
+    left_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c2_2.name, c2_2.version)]
+    right_parent.componentReferences = [c_ref(c3.name, c3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(left_parent, c2, None),
+        cde(left_parent, c2_2, None),
+        cde(right_parent, None, c3),
+        cde(None, left_parent, right_parent),
+    ]
+
+    
+    # check two added same components with different versions
+    left_parent.componentReferences = [c_ref(c2.name, c2.version), c_ref(c2_2.name, c2_2.version)]
+    right_parent.componentReferences = [c_ref(c2_3.name, c2_3.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        cde(right_parent, c2, c2_3),
+        cde(left_parent, c2_2, None),
+        cde(None, left_parent, right_parent),
+    ]
+    print('xxxxxxxxx')
+    # check two added components left side one via c ref
+    left_parent.componentReferences = [c_ref(c4.name, c4.version)]
     right_parent.componentReferences = []
     diff = cnudie.util.diff_component_dependency_versions(
         left_component=left_parent,
         right_component=right_parent,
         resolve_function=resolve_ref,
     )
-    assert list(diff) == [(right_parent, c2, None), (None, left_parent, right_parent)]
+    assert list(diff) == [
+        {'parent': left_parent, 'left': c4, 'right': None},
+        {'parent': c4, 'left': c5, 'right': None},
+        {'parent': None, 'left': left_parent, 'right': right_parent},
+    ]
 
-    # right_c = c[0]
-    # left_c = c[1]
-    # diff = cnudie.util.diff_component_dependency_versions(
-    #     left_component=left_c,
-    #     right_component=right_c,
-    #     resolve_function=resolve_ref,
-    # )
-
-    l = list(diff)
-    # logger.info(l)
+    # check two added components right side one via c ref
+    left_parent.componentReferences = []
+    right_parent.componentReferences = [c_ref(c4.name, c4.version)]
+    diff = cnudie.util.diff_component_dependency_versions(
+        left_component=left_parent,
+        right_component=right_parent,
+        resolve_function=resolve_ref,
+    )
+    assert list(diff) == [
+        {'parent': right_parent, 'left': None, 'right': c4},
+        {'parent': c4, 'left': None, 'right': c5},
+        {'parent': None, 'left': left_parent, 'right': right_parent},
+    ]
