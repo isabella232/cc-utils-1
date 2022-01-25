@@ -18,10 +18,12 @@ from model.base import (
     ModelValidationError,
     NamedModelElement,
 )
+import ci.paths
 from ci.util import (
     existing_dir,
     not_empty,
     not_none,
+    merge_dicts,
     parse_yaml_file,
     warning,
 )
@@ -180,10 +182,15 @@ class ConfigFactory:
         disable_cfg_element_lookup=False,
     ):
         cfg_dir = existing_dir(os.path.abspath(cfg_dir))
-        cfg_types_dict = parse_yaml_file(os.path.join(cfg_dir, cfg_types_file))
+
+        base_cfg_types = parse_yaml_file(ci.paths.cfg_types_file)
+        cfg_repo_cfg_types_dict = parse_yaml_file(os.path.join(cfg_dir, cfg_types_file))
+
+        merged_cfg_types = merge_dicts(base_cfg_types, cfg_repo_cfg_types_dict)
+
         raw = {}
 
-        raw[ConfigFactory.CFG_TYPES] = cfg_types_dict
+        raw[ConfigFactory.CFG_TYPES] = merged_cfg_types
 
         def retrieve_cfg(cfg_type):
             cfg_dict = {}

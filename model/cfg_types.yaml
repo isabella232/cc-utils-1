@@ -1,0 +1,272 @@
+# alicloud:
+#   cfg_type_name: alicloud
+#   factory_method: alicloud
+#   type: AlicloudConfig
+
+# azure-shared-gallery:
+#   cfg_type_name: azure_shared_gallery
+#   factory_method: azure_shared_gallery
+#   type: AzureSharedGalleryCfg
+
+# azure-storage-account:
+#   cfg_type_name: azure_storage_account
+#   factory_method: azure_storage_account
+#   type: AzureStorageAccountCfg
+cfg_types:
+  - cfg_type_name: cam
+    type: CAMCfg
+  - cfg_type_name: aws
+    type: AwsProfile
+  
+
+
+# ccee:
+#   cfg_type_name: ccee
+#   factory_method: ccee
+#   type: CCEEConfig
+
+# cfg_set:
+#   cfg_type_name: cfg_set
+#   factory_method: cfg_set
+#   type: ConfigurationSet
+
+# checkmarx:
+#   cfg_type_name: checkmarx
+#   factory_method: checkmarx
+#   type: CheckmarxConfig
+
+# cicd-elasticsearch:
+#   cfg_type_name: cicd-elasticsearch-helm-values
+#   type: NamedModelElement
+
+# cicd_monitoring_helm_values:
+#   cfg_type_name: cicd_monitoring_helm_values
+#   type: NamedModelElement
+
+# clamav:
+#   cfg_type_name: clamav
+#   factory_method: clamav
+#   type: ClamAVConfig
+
+# concourse:
+#   cfg_type_name: concourse
+#   factory_method: concourse
+#   type: ConcourseConfig
+
+# concourse_endpoint:
+#   cfg_type_name: concourse_endpoint
+#   factory_method: concourse_endpoint
+#   type: ConcourseEndpoint
+
+# concourse_helmchart:
+#   cfg_type_name: concourse_helmchart
+#   factory_method: concourse_helmchart
+#   type: NamedModelElement
+
+# concourse_oauth:
+#   cfg_type_name: concourse_oauth
+#   factory_method: concourse_oauth
+#   type: ConcourseOAuthConfig
+
+# concourse_team_cfg:
+#   cfg_type_name: concourse_team_cfg
+#   factory_method: concourse_team_cfg
+#   type: ConcourseTeamConfig
+
+# concourse_uam:
+#   cfg_type_name: concourse_uam
+#   factory_method: concourse_uam
+#   type: ConcourseUAMConfig
+
+# container_registry:
+#   cfg_type_name: container_registry
+#   factory_method: container_registry
+#   type: ContainerRegistryConfig
+
+# ctx_repository:
+#   cfg_type_name: ctx_repository
+#   factory_method: ctx_repository
+#   type: CtxRepositoryCfg
+
+# delivery:
+#   cfg_type_name: delivery
+#   factory_method: delivery
+#   type: DeliveryConfig
+
+# delivery_db:
+#   cfg_type_name: delivery_db
+#   factory_method: delivery_db
+#   type: DeliveryDbConfig
+
+# delivery_endpoints:
+#   cfg_type_name: delivery_endpoints
+#   factory_method: delivery_endpoints
+#   type: DeliveryEndpointsCfg
+
+# elasticsearch:
+#   cfg_type_name: elasticsearch
+#   factory_method: elasticsearch
+#   type: ElasticSearchConfig
+
+# email:
+#   cfg_type_name: email
+#   factory_method: email
+#   type: EmailConfig
+
+# gardenlinux-cache:
+#   cfg_type_name: gardenlinux_cache
+#   factory_method: gardenlinux_cache
+#   type: GardenlinuxCacheConfig
+
+# gcloud_account:
+#   cfg_type_name: gcloud_account
+#   type: NamedModelElement
+
+# gcp:
+#   cfg_type_name: gcp
+#   factory_method: gcp
+#   type: GcpServiceAccount
+
+# gcs:
+#   cfg_type_name: gcs
+#   type: NamedModelElement
+
+# github:
+#   cfg_type_name: github
+#   factory_method: github
+#   type: GithubConfig
+
+# gitlab:
+#   cfg_type_name: gitlab
+#   factory_method: gitlab
+#   type: GitlabConfig
+
+# gpg_key:
+#   cfg_type_name: gpg_key
+#   type: NamedModelElement
+
+# hub:
+#   cfg_type_name: hub
+#   factory_method: hub
+#   type: NamedModelElement
+
+# hub_repositories:
+#   cfg_type_name: hub_repositories
+#   factory_method: hub_repositories
+#   type: NamedModelElement
+
+# ingress:
+#   cfg_type_name: ingress
+#   factory_method: ingress
+#   type: IngressConfig
+
+# jira:
+#   cfg_type_name: jira
+#   factory_method: jira
+#   type: JiraConfig
+
+# job_mapping:
+#   cfg_type_name: job_mapping
+#   factory_method: job_mapping
+#   type: JobMappingSet
+
+# kubernetes:
+#   cfg_type_name: kubernetes
+#   factory_method: kubernetes
+#   type: KubernetesConfig
+
+# nginx_ingress:
+#   cfg_type_name: nginx_ingress
+#   type: NamedModelElement
+
+# oauth2-proxy:
+#   cfg_type_name: oauth2_proxy
+#   factory_method: oauth2_proxy
+#   type: Oauth2ProxyConfig
+
+# openstack_os_image:
+#   cfg_type_name: openstack_os_image
+#   factory_method: openstack_os_image
+#   type: NamedModelElement
+
+# privatelink:
+#   cfg_type_name: privatelink
+#   type: NamedModelElement
+
+# protecode:
+#   cfg_type_name: protecode
+#   factory_method: protecode
+#   type: ProtecodeConfig
+
+# proxy:
+#   cfg_type_name: proxy
+#   factory_method: proxy
+#   type: ProxyConfig
+
+# pypi:
+#   cfg_type_name: pypi
+#   factory_method: pypi
+#   type: PyPiCfg
+
+# remedy-test:
+#   cfg_type_name: remedy_test
+#   type: NamedModelElement
+
+# saf:
+#   cfg_type_name: saf
+#   factory_method: saf
+#   type: SafApiCfg
+
+# secret:
+#   cfg_type_name: secret
+#   factory_method: secret
+#   type: Secret
+
+# secrets_server:
+#   cfg_type_name: secrets_server
+#   factory_method: secrets_server
+#   type: SecretsServerConfig
+
+# service-principal:
+#   cfg_type_name: azure_service_principal
+#   factory_method: azure_service_principal
+#   type: AzureServicePrincipal
+
+# slack:
+#   cfg_type_name: slack
+#   factory_method: slack
+#   type: SlackConfig
+
+# tekton:
+#   cfg_type_name: tekton
+#   factory_method: tekton
+#   type: TektonConfig
+
+# tekton-dashboard-ingress:
+#   cfg_type_name: tekton_dashboard_ingress
+#   factory_method: tekton_dashboard_ingress
+#   type: TektonDashboardIngressConfig
+
+# testmachinery:
+#   cfg_type_name: testmachinery
+#   type: NamedModelElement
+
+# victorops:
+#   cfg_type_name: victorops
+#   factory_method: victorops
+#   type: VictoropsConfig
+
+# webhook_dispatcher:
+#   cfg_type_name: webhook_dispatcher
+#   factory_method: webhook_dispatcher
+#   type: WebhookDispatcherConfig
+
+# webhook_dispatcher_deployment:
+#   cfg_type_name: webhook_dispatcher_deployment
+#   factory_method: webhook_dispatcher_deployment
+#   type: WebhookDispatcherDeploymentConfig
+
+# whitesource:
+#   cfg_type_name: whitesource
+#   factory_method: whitesource
+#   type: WhitesourceConfig
