@@ -116,20 +116,3 @@ class FilterCfg(ModelBase):
 class ImageFilterMixin(ModelBase):
     def filters(self):
         return FilterCfg(raw_dict=self.raw['filters'])
-
-
-IMAGE_ATTRS = (
-    AttributeSpec.optional(
-        name='filters',
-        default={
-            'include_image_references': (),
-            'exclude_image_references': (),
-            'include_image_names': (),
-            'exclude_image_names': (),
-            'include_component_names': (),
-            'exclude_component_names': (),
-        },
-        doc='optional filters to restrict container images to process',
-        type=FilterCfg,
-    ),
-)

@@ -27,12 +27,6 @@ def scan_without_notification(
     allowed_licenses: typing.List[str] = [],
     prohibited_licenses: typing.List[str] = [],
     reference_protecode_group_ids: typing.List[int] = [],
-    include_image_references: typing.List[str] = [],
-    exclude_image_references: typing.List[str] = [],
-    include_image_names: typing.List[str] = [],
-    exclude_image_names: typing.List[str] = [],
-    include_component_names: typing.List[str] = [],
-    exclude_component_names: typing.List[str] = [],
     no_license_report: bool = False,
 ):
     cfg_factory = ci.util.ctx().cfg_factory()
@@ -50,15 +44,6 @@ def scan_without_notification(
     protecode_api_url = protecode_cfg.api_url()
     protecode_group_url = ci.util.urljoin(protecode_api_url, 'group', str(protecode_group_id))
 
-    filter_function = concourse.steps.images.create_composite_filter_function(
-        include_image_references=include_image_references,
-        exclude_image_references=exclude_image_references,
-        include_image_names=include_image_names,
-        exclude_image_names=exclude_image_names,
-        include_component_names=include_component_names,
-        exclude_component_names=exclude_component_names,
-    )
-
     cvss_version = CVSSVersion.V3
 
     concourse.steps.scan_container_images.print_protecode_info_table(
@@ -66,12 +51,6 @@ def scan_without_notification(
         reference_protecode_group_ids=reference_protecode_group_ids,
         protecode_group_url=protecode_group_url,
         cvss_version=cvss_version,
-        include_image_references=include_image_references,
-        exclude_image_references=exclude_image_references,
-        include_image_names=include_image_names,
-        exclude_image_names=exclude_image_names,
-        include_component_names=include_component_names,
-        exclude_component_names=exclude_component_names,
     )
 
     logger.info('running protecode scan for all components')
@@ -84,7 +63,6 @@ def scan_without_notification(
         processing_mode=ProcessingMode(processing_mode),
         parallel_jobs=parallel_jobs,
         cve_threshold=cve_threshold,
-        image_reference_filter=filter_function,
         cvss_version=cvss_version,
     )
 
