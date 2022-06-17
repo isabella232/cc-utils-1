@@ -58,7 +58,7 @@ class AnalysisResult(ModelBase):
     def components(self) -> 'typing.Generator[Component, None, None]':
         return (Component(raw_dict=raw) for raw in self.raw.get('components', []))
 
-    def custom_data(self):
+    def custom_data(self) -> dict[str, str]:
         return self.raw.get('custom_data')
 
     def greatest_cve_score(self) -> float:
@@ -74,7 +74,7 @@ class AnalysisResult(ModelBase):
 
 
 class Component(ModelBase):
-    def name(self):
+    def name(self) -> str:
         return self.raw.get('lib')
 
     def version(self):
