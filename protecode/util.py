@@ -31,6 +31,7 @@ import product.v2
 import protecode.model as pm
 
 import gci.componentmodel as cm
+import protecode.gardenlinux
 
 from protecode.scanning_util import (
     ProcessingMode,
@@ -42,6 +43,22 @@ from protecode.model import (
 
 logger = logging.getLogger(__name__)
 
+
+def upload_gardenlinux(
+    protecode_cfg,
+    component_descriptor,
+    protecode_group_id=5,
+    parallel_jobs=2,
+    cve_threshold=7,
+    processing_mode=ProcessingMode.RESCAN,
+):
+    return protecode.gardenlinux.process(
+        protecode_cfg_name=protecode_cfg.name(),
+        component_descriptor=component_descriptor,
+        protecode_group_id=protecode_group_id,
+        parallel_jobs=parallel_jobs,
+        processing_mode=processing_mode,
+    )
 
 def upload_grouped_images(
     protecode_cfg,

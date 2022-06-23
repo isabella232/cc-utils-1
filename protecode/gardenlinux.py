@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import boto3
+import botocore
+import botocore.client
 import tarfile
 import io
 import typing
@@ -17,6 +19,7 @@ import cnudie.retrieve
 import cnudie.util
 import protecode.model as pm
 import protecode.client
+from protecode.scanning_util import ProcessingMode
 
 import gci.componentmodel as cm
 
@@ -94,12 +97,25 @@ def upload_name(
     ):
         return f'{component.name}_{component.version}'.replace('/', '_')
 
+
+def wait_for_scans_to_finish(
+    protecode_client: protecode.client.ProtecodeApi,
+    scans: typing.Iterable[pm.AnalysisResult],
+) -> typing.Generator[pm.ProcessingStatus, None, None]:
+    for scan_result in scans:
+        product_id = scan_result.product_id()
+        logger.info(f'waiting for {product_id}')
+        yield protecode_client.wait_for_scan_result(product_id)
+        logger.info(f'finished waiting for {product_id}')
+
+
 def process(
     protecode_cfg_name: str,
     component_descriptor: cm.ComponentDescriptor,
     protecode_group_id: int,
     parallel_jobs: int,
-):
+    processing_mode: ProcessingMode = ProcessingMode.FORCE_UPLOAD,
+) -> typing.Iterable[pm.AnalysisResult]:
     protecode_client = ccc.protecode.client_from_config_name(protecode_cfg_name)
     components = list(cnudie.retrieve.components(component=component_descriptor))
 
@@ -111,59 +127,92 @@ def process(
     # TODO: rm
     gardenlinux_components = gardenlinux_components[:1]
 
-    existing_results = protecode_client.list_apps(
-        group_id=protecode_group_id,
-        custom_attribs=custom_metadata(),
-    )
+    existing_results = {
+        r.custom_data()['VERSION']:r
+        for r in protecode_client.list_apps(
+            group_id=protecode_group_id,
+            custom_attribs=custom_metadata(),
+        )
+    }
 
     # determine scans to (re)upload
     gardenlinux_versions = [component.version for component in gardenlinux_components]
-    gardenlinux_versions_with_scans = [r.custom_data()['VERSION'] for r in existing_results]
 
-    gardenlinux_components_with_scans = [
-        component
+    # TODO: Make components hashable.
+    # Once components are hashable, simplify to dict[component, AnalysisResult]
+    gardenlinux_components_with_scans = {
+        component.name: (component, existing_results[component.version])
         for component in gardenlinux_components
-        if component.version in gardenlinux_versions_with_scans
-    ]
+        if component.version in existing_results
+    }
 
     gardenlinux_components_without_scans = [
         component
         for component in gardenlinux_components
-        if component not in gardenlinux_components_with_scans
+        if component.name not in gardenlinux_components_with_scans
     ]
 
     results_of_removed_gardenlinux_versions = [
         result
-        for result in existing_results
-        if result.custom_data()['VERSION'] not in gardenlinux_versions
+        for version, result in existing_results.items()
+        if version not in gardenlinux_versions
     ]
 
-    # upload new versions
-    analysis_results = upload_gardenlinux_images(
+    pool = ThreadPoolExecutor(max_workers=parallel_jobs)
+
+    if processing_mode in [ProcessingMode.FORCE_UPLOAD, ProcessingMode.RESCAN]:
+        futures = [
+            pool.submit(
+                process_component,
+                protecode_client=protecode_client,
+                gardenlinux_component=component,
+                protecode_group_id=protecode_group_id,
+                processing_mode=processing_mode,
+            ) for component in gardenlinux_components_without_scans
+        ] + [
+            pool.submit(
+                process_component,
+                protecode_client=protecode_client,
+                gardenlinux_component=component,
+                replace_id=result.product_id(),
+                processing_mode = processing_mode,
+                protecode_group_id=protecode_group_id,
+            ) for _, (component, result) in gardenlinux_components_with_scans.items()
+        ]
+        scans = [f.result() for f in futures]
+
+    else:
+        raise NotImplementedError(processing_mode)
+
+    scan_results = list(wait_for_scans_to_finish(
         protecode_client=protecode_client,
-        gardenlinux_components=gardenlinux_components_without_scans,
-        protecode_group_id=protecode_group_id,
-        parallel_jobs=parallel_jobs,
-    )
+        scans=scans,
+    ))
 
     # copy triages
-    for result in analysis_results:
+    for result in scan_results:
         copy_triages(
-            from_results=existing_results,
+            from_results=list(existing_results.values()),
             to_result=result,
+            to_group_id=protecode_group_id,
             protecode_api=protecode_client,
         )
 
     # delete removed versions
-    for p in results_of_removed_gardenlinux_versions:
-        protecode_client.delete_product(p.product_id())
+    # for p in results_of_removed_gardenlinux_versions:
+    #     protecode_client.delete_product(p.product_id())
+
+    return scan_results
 
 
 def _read_s3_fileobj(
     resource: cm.Resource,
 ):
     access: cm.S3Access = resource.access
-    s3_client = boto3.client('s3')
+    s3_client = boto3.client(
+        's3',
+        config=botocore.client.Config(signature_version=botocore.UNSIGNED)
+    )
     s3_object = s3_client.get_object(Bucket=access.bucketName, Key=access.objectKey)
     return s3_object['Body']
 
@@ -200,10 +249,10 @@ def write_combined_tarfile(
                 # we already have seen a file with the same name and size
                 return
 
-            known_tar_sizes[file_name].add(tar_info)
+            known_tar_sizes[file_name].add(tar_info.size)
             # TODO: The way this is done preserves the structure of the first tar-archive
             # processed. Consider simply prefixing all files.
-            if len(known_tar_sizes[file_name] == 0):
+            if len(known_tar_sizes[file_name]) == 0:
                 # never seen this file, simply return original tarinfo
                 return tar_info
             else:
@@ -218,6 +267,7 @@ def write_combined_tarfile(
             for resource in gardenlinux_component.resources
             if resource.type == GARDENLINUX_ROOTFS_TAR_RESOURCE_TYPE
         ]
+        rootfs_resources = rootfs_resources[:2]
         with tarfile.open(fileobj=output_file, mode='w:gz') as combined_archive:
             known_tar_sizes = collections.defaultdict(set)
             for resource in rootfs_resources:
@@ -225,38 +275,40 @@ def write_combined_tarfile(
                     for tar_info in tar_archive:
                         if processed_tar_info := process_tarinfo(
                             tar_info=tar_info,
-                            known_member_sizes=known_tar_sizes,
+                            known_tar_sizes=known_tar_sizes,
                             prefix=resource.extraIdentity['platform'],
                         ):
                             combined_archive.addfile(
-                                tar_info=processed_tar_info,
+                                tarinfo=processed_tar_info,
                                 fileobj=tar_archive.extractfile(tar_info),
                             )
 
 
-def upload_gardenlinux_images(
+def process_component(
     protecode_client: protecode.client.ProtecodeApi,
-    gardenlinux_components: typing.Iterable[cm.Component],
+    gardenlinux_component: cm.Component,
     protecode_group_id: int,
-    parallel_jobs: int,
-) -> typing.Iterable[pm.AnalysisResult]:
-    def process_component(gardenlinux_component: cm.Component):
-        with io.BytesIO() as filelike_obj:
-            write_combined_tarfile(
-                output_file=filelike_obj,
-                gardenlinux_component=gardenlinux_component,
-            )
+    processing_mode: ProcessingMode,
+    replace_id: int = None,
+):
+    if replace_id and processing_mode is ProcessingMode.RESCAN:
+        scan_result_short = protecode_client.scan_result_short(product_id=replace_id)
+        if not scan_result_short.is_stale():
+            return protecode_client.scan_result(product_id=replace_id)
+        if scan_result_short.has_binary():
+            protecode_client.rescan(product_id=replace_id)
+            return protecode_client.scan_result(product_id=replace_id)
 
-            return protecode_client.upload(
-                application_name=upload_name(gardenlinux_component),
-                group_id=protecode_group_id,
-                data=filelike_obj,
-                custom_attribs=custom_metadata(gardenlinux_component),
-            )
-
-    with ThreadPoolExecutor(max_workers=parallel_jobs) as executor:
-        futures = [
-            executor.submit(process_component, component)
-            for component in gardenlinux_components
-        ]
-        return [f.result() for f in futures]
+    with io.BytesIO() as filelike_obj:
+        write_combined_tarfile(
+            output_file=filelike_obj,
+            gardenlinux_component=gardenlinux_component,
+        )
+        filelike_obj.seek(0)
+        return protecode_client.upload(
+            application_name=upload_name(gardenlinux_component),
+            group_id=protecode_group_id,
+            replace_id=replace_id,
+            data=filelike_obj,
+            custom_attribs=custom_metadata(gardenlinux_component),
+        )
