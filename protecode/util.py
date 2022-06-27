@@ -314,3 +314,32 @@ def iter_artefact_metadata(
             meta=meta,
             data=component,
         )
+
+def resource_groups(
+    component_descriptor,
+    resource_types: typing.Iterable[str]=['ociImage', 'application/tar+vm-image-rootfs']
+) -> typing.Iterable[pm.ResourceGroup]:
+    components = list(cnudie.retrieve.components(component=component_descriptor))
+    if 'ociImage' in resource_types:
+        yield from {
+            pm.OciResourceGroup(
+                component_name=component.name,
+                component_version=None,
+                resource_name=resource.name
+            )
+            for component in components
+            for resource in product.v2.resources(
+                component=component,
+                resource_types=[cm.ResourceType.OCI_IMAGE],
+                resource_access_types=[cm.AccessType.OCI_REGISTRY],
+            )
+        }
+    if 'application/tar+vm-image-rootfs' in resource_types:
+        yield from {
+            pm.TarRootfsResourceGroup(
+                component_name=component.name,
+                component_version=component.version,
+                resource_name='gardenlinux'
+            ) for component in components
+            if component.name == 'github.com/gardenlinux/gardenlinux'
+        }

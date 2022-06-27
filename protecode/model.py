@@ -14,33 +14,42 @@
 # limitations under the License.
 
 import dataclasses
-from enum import Enum
+import enum
+import functools
 import typing
 
+
+from concourse.model.base import (
+    AttribSpecMixin,
+    AttributeSpec,
+)
+import protecode.client
+import ccc.oci
+import gci.componentmodel
 import github.compliance.result as gcr
 
 from model.base import ModelBase
 
 
-class VersionOverrideScope(Enum):
+class VersionOverrideScope(enum.Enum):
     APP = 1
     GROUP = 2
     GLOBAL = 3
 
 
-class ProcessingStatus(Enum):
+class ProcessingStatus(enum.Enum):
     BUSY = 'B'
     READY = 'R'
     FAILED = 'F'
 
 
-class CVSSVersion(Enum):
+class CVSSVersion(enum.Enum):
     V2 = 'CVSSv2'
     V3 = 'CVSSv3'
 
 
 class AnalysisResult(ModelBase):
-    def product_id(self):
+    def product_id(self) -> int:
         return self.raw.get('product_id')
 
     def report_url(self):
@@ -184,7 +193,7 @@ class Vulnerability(ModelBase):
         return f'{self.__class__.__name__}: {self.cve()}'
 
 
-class TriageScope(Enum):
+class TriageScope(enum.Enum):
     ACCOUNT_WIDE = 'CA'
     FILE_NAME = 'FN'
     FILE_HASH = 'FH'
@@ -262,7 +271,7 @@ class ScanResult(ModelBase):
 #############################################################################
 ## upload result model
 
-class UploadStatus(Enum):
+class UploadStatus(enum.Enum):
     SKIPPED = 1
     PENDING = 2
     DONE = 4
@@ -280,3 +289,150 @@ class BDBA_ScanResult(gcr.ScanResult):
     @property
     def license_names(self):
         return {l.name() for l in self.licenses}
+
+
+
+@dataclasses.dataclass
+class Binary:
+    def display_name(self): pass
+    def metadata(self):  pass
+
+class OciResourceBinary(Binary):
+    resource: gci.componentmodel.Resource
+
+    def metadata(self, omit_version: bool):
+        metadata_dict = {
+            'IMAGE_REFERENCE_NAME': self.resource.name,
+            'RESOURCE_TYPE': self.resource.type.value,
+        }
+        if not omit_version:
+            img_ref_with_digest = self._image_digest()
+            digest = img_ref_with_digest.split('@')[-1]
+            metadata_dict['IMAGE_REFERENCE'] = self.resource.access.imageReference
+            metadata_dict['IMAGE_VERSION'] = self.resource.version
+            metadata_dict['IMAGE_DIGEST'] = digest
+            metadata_dict['DIGEST_IMAGE_REFERENCE'] = str(img_ref_with_digest)
+
+    @functools.lru_cache
+    def _image_digest(self):
+        oci_client = ccc.oci.oci_client()
+        return oci_client.to_digest_hash(
+            image_reference=self.resource.access.imageReference,
+        )
+
+    def display_name(self):
+        image_reference = self.resource.access.imageReference
+        _, image_tag = image_reference.split(':')
+        return f'{self.resource.name}_{image_tag}'
+
+class TarRootfsAggregateResourceBinary(Binary):
+    resources: typing.Iterable[gci.componentmodel.Resource]
+
+    def display_name(self):
+        return f'{self.resources[0].name}_{self.resources[0].version}'
+
+    def metadata(self, omit_version: bool):
+        metadata = {
+            'RESOURCE_TYPE': self.resources[0].type.value,
+        }
+        if not omit_version:
+            metadata.update({'RESOURCE_VERSION': self.resources[0].version})
+        return metadata
+
+@dataclasses.dataclass
+class ProtecodeScan:
+    binary: Binary
+    component: gci.componentmodel.Component
+
+    def display_name(self) -> str:
+        return f'{self.binary.display_name()}_{self.component.name}'.replace('/', '_')
+
+    def metadata(
+        self,
+        omit_component_version: bool,
+        omit_resource_version: bool,
+    ) -> dict:
+        metadata = self.binary.metadata(omit_resource_version)
+        metadata.update({'COMPONENT_NAME': self.component.name})
+        if not omit_component_version:
+            metadata.update({'COMPONENT_VERSION': self.component.name})
+        return metadata
+
+    @functools.lru_cache
+    def product_id(
+        self,
+        protecode_api: protecode.client.ProtecodeApi,
+        protecode_group_id:int,
+    ) -> int:
+        apps = protecode_api.list_apps(
+            group_id=protecode_group_id,
+            custom_attribs=self.metadata(
+                omit_component_version=True,  # legacy behaviour
+                omit_resource_version=False,
+            ),
+        )
+        if (known_apps := len(apps)) == 0:
+            return
+
+        if known_apps >= 1:
+            raise RuntimeError()
+
+        return apps[0].product_id()
+
+
+
+
+@dataclasses.dataclass(frozen=True)
+class ResourceGroup:
+    '''
+    A set of similar Resources sharing a common declaring Component (not necessarily in the same
+    version) and a common logical name.
+
+    Resource Groups are intended to be handled as "virtual Protecode Groups".
+    This particularly means they share triages.
+
+    As a very common "special case", a resource group may contain exactly one container image.
+
+    @param component: the Component declaring dependency towards the given images
+    @param resources: iterable of Resources; must share logical name
+    '''
+    # KISS
+    component_name: str
+    resource_name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class OciResourceGroup(ResourceGroup):
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
+class TarRootfsResourceGroup(ResourceGroup):
+    component_version: str | None
+
+
+class ProcessingMode(AttribSpecMixin, enum.Enum):
+    RESCAN = 'rescan'
+    FORCE_UPLOAD = 'force_upload'
+
+    @classmethod
+    def _attribute_specs(cls):
+        return (
+            AttributeSpec.optional(
+                name=cls.RESCAN.value,
+                default=None,
+                doc='''
+                    (re-)scan container images if Protecode indicates this might bear new results.
+                    Upload absent images.
+                ''',
+                type=str,
+            ),
+            AttributeSpec.optional(
+                name=cls.FORCE_UPLOAD.value,
+                default=None,
+                doc='''
+                    `always` upload and scan all images.
+                ''',
+                type=str,
+            ),
+        )

@@ -49,9 +49,9 @@ def _enum_component_versions(
             yield component.version()
 
 
-def copy_triages(
+def copy_triages( # TODO: move to protecode.util; from_group_id
     from_results: typing.Iterable[pm.AnalysisResult],
-    to_result: pm.AnalysisResult,
+    to_result: pm.AnalysisResult, # TODO: support iterable
     to_group_id: int,
     protecode_api,
 ):

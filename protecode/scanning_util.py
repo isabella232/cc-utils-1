@@ -45,7 +45,7 @@ from ci.util import not_none, warning, check_type, info
 logger = logging.getLogger(__name__)
 
 
-class ResourceGroup:
+class ResourceGroup: # TODO: extend use to rootfs-tars
     '''
     A set of Resources representing an OCI image sharing a common declaring component and a common
     logical name.
