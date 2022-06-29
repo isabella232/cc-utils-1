@@ -13,9 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import boto3
+import botocore
+import botocore.client
 import dataclasses
 import enum
 import functools
+import collections
+import tarfile
+import tarutil
 import typing
 
 
@@ -23,7 +29,8 @@ from concourse.model.base import (
     AttribSpecMixin,
     AttributeSpec,
 )
-import protecode.client
+import oci
+import ccc
 import ccc.oci
 import gci.componentmodel
 import github.compliance.result as gcr
@@ -292,13 +299,16 @@ class BDBA_ScanResult(gcr.ScanResult):
 
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class Binary:
-    def display_name(self): pass
-    def metadata(self):  pass
+    def display_name(self) -> str: pass
+    def metadata(self) -> dict[str, str]:  pass
+    def upload_data(self) -> typing.Generator[bytes, None, None]: pass
 
+
+@dataclasses.dataclass(frozen=True)
 class OciResourceBinary(Binary):
-    resource: gci.componentmodel.Resource
+    artifact: gci.componentmodel.Resource
 
     def metadata(self, omit_version: bool):
         metadata_dict = {
@@ -312,8 +322,9 @@ class OciResourceBinary(Binary):
             metadata_dict['IMAGE_VERSION'] = self.resource.version
             metadata_dict['IMAGE_DIGEST'] = digest
             metadata_dict['DIGEST_IMAGE_REFERENCE'] = str(img_ref_with_digest)
+        return metadata_dict
 
-    @functools.lru_cache
+    # @functools.lru_cache ???
     def _image_digest(self):
         oci_client = ccc.oci.oci_client()
         return oci_client.to_digest_hash(
@@ -325,6 +336,18 @@ class OciResourceBinary(Binary):
         _, image_tag = image_reference.split(':')
         return f'{self.resource.name}_{image_tag}'
 
+    def has_skip_label(self) -> bool: pass
+
+    def upload_data(self) -> typing.Iterable[bytes]:
+        # XXX need to check whether resource is actually a oci-resource
+        image_reference = self.resource.access.imageReference
+        oci_client = ccc.oci.oci_client()
+        yield from oci.image_layers_as_tarfile_generator(
+            image_reference=image_reference,
+            oci_client=oci_client
+        )
+
+@dataclasses.dataclass(frozen=True)
 class TarRootfsAggregateResourceBinary(Binary):
     resources: typing.Iterable[gci.componentmodel.Resource]
 
@@ -333,57 +356,69 @@ class TarRootfsAggregateResourceBinary(Binary):
 
     def metadata(self, omit_version: bool):
         metadata = {
-            'RESOURCE_TYPE': self.resources[0].type.value,
+            'RESOURCE_TYPE': self.resources[0].type,
         }
         if not omit_version:
             metadata.update({'RESOURCE_VERSION': self.resources[0].version})
         return metadata
 
-@dataclasses.dataclass
-class ProtecodeScan:
-    binary: Binary
-    component: gci.componentmodel.Component
+    def upload_data(self):
+        known_tar_sizes = collections.defaultdict(set)
+        def process_tarinfo(
+            tar_info: tarfile.TarInfo,
+        ) -> bool:
+            # TODO: Check
+            if not tar_info.isfile():
+                return True
 
-    def display_name(self) -> str:
-        return f'{self.binary.display_name()}_{self.component.name}'.replace('/', '_')
+            file_name = tar_info.name
+            if any((size == tar_info.size for size in known_tar_sizes[file_name])):
+                # we already have seen a file with the same name and size
+                return False
 
-    def metadata(
-        self,
-        omit_component_version: bool,
-        omit_resource_version: bool,
-    ) -> dict:
-        metadata = self.binary.metadata(omit_resource_version)
-        metadata.update({'COMPONENT_NAME': self.component.name})
-        if not omit_component_version:
-            metadata.update({'COMPONENT_VERSION': self.component.name})
-        return metadata
+            known_tar_sizes[file_name].add(tar_info.size)
+            return True
 
-    @functools.lru_cache
-    def product_id(
-        self,
-        protecode_api: protecode.client.ProtecodeApi,
-        protecode_group_id:int,
-    ) -> int:
-        apps = protecode_api.list_apps(
-            group_id=protecode_group_id,
-            custom_attribs=self.metadata(
-                omit_component_version=True,  # legacy behaviour
-                omit_resource_version=False,
-            ),
+        def s3_fileobj(
+            resource: gci.componentmodel.Resource,
+        ):
+            access: gci.componentmodel.S3Access = resource.access
+            s3_client = boto3.client(
+                's3',
+                config=botocore.client.Config(signature_version=botocore.UNSIGNED)
+            )
+            s3_object = s3_client.get_object(Bucket=access.bucketName, Key=access.objectKey)
+            return s3_object['Body']
+
+        rootfs_resources = self.resources[:2]
+        src_tarfiles = (
+            tarfile.open(fileobj=s3_fileobj(resource), mode='r|*')
+            for resource in rootfs_resources
         )
-        if (known_apps := len(apps)) == 0:
-            return
-
-        if known_apps >= 1:
-            raise RuntimeError()
-
-        return apps[0].product_id()
+        yield from tarutil.filtered_tarfile_generator(
+            src_tf=src_tarfiles,
+            filter_func=process_tarinfo,
+        )
 
 
+@dataclasses.dataclass
+class ScanRequest:
+    scan_content: Binary  # scan_content
+    display_name: str
+    target_product_id: int | None
+
+    # TODO: comment/explanation
+    custom_metadata: dict
 
 
 @dataclasses.dataclass(frozen=True)
-class ResourceGroup:
+class ComponentArtifacts:
+    component: gci.componentmodel.Component
+    artifact: gci.componentmodel.Resource
+
+
+@dataclasses.dataclass(frozen=True)
+class ArtifactGroup:
     '''
     A set of similar Resources sharing a common declaring Component (not necessarily in the same
     version) and a common logical name.
@@ -396,20 +431,27 @@ class ResourceGroup:
     @param component: the Component declaring dependency towards the given images
     @param resources: iterable of Resources; must share logical name
     '''
-    # KISS
-    component_name: str
-    resource_name: str
+    name: str
+    component_artifacts: typing.MutableSequence[ComponentArtifacts] = dataclasses.field(default_factory=list)
 
+    def component_name(self):
+        return self.component_artifacts[0].component.name
+
+    def resource_name(self):
+        return self.component_artifacts[0].artifact.name
+
+    def resource_type(self):
+        return self.component_artifacts[0].artifact.type
 
 @dataclasses.dataclass(frozen=True)
-class OciResourceGroup(ResourceGroup):
+class OciArtifactGroup(ArtifactGroup):
     pass
 
-
 @dataclasses.dataclass(frozen=True)
-class TarRootfsResourceGroup(ResourceGroup):
-    component_version: str | None
-
+class TarRootfsArtifactGroup(ArtifactGroup):
+    # For these resource groups, all component versions should be the same
+    def component_version(self):
+        return self.component_artifacts[0].component.version
 
 class ProcessingMode(AttribSpecMixin, enum.Enum):
     RESCAN = 'rescan'

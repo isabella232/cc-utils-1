@@ -17,6 +17,7 @@ import collections
 from concurrent.futures import ThreadPoolExecutor
 import datetime
 import logging
+import functools
 import tabulate
 import typing
 
@@ -28,6 +29,8 @@ import cnudie.util
 import dso.model
 import product.util
 import product.v2
+import oci
+import oci.client
 import protecode.model as pm
 
 import gci.componentmodel as cm
@@ -315,31 +318,162 @@ def iter_artefact_metadata(
             data=component,
         )
 
+def corresponding_resource_group_name(
+    component: cm.Component,
+    resource: cm.Resource,
+):
+    return (
+        f'{component.name}_{resource.name}_{resource.version}'.replace('/', '_')
+    )
+
 def resource_groups(
-    component_descriptor,
-    resource_types: typing.Iterable[str]=['ociImage', 'application/tar+vm-image-rootfs']
-) -> typing.Iterable[pm.ResourceGroup]:
+    component_descriptor: cm.ComponentDescriptor,
+):
     components = list(cnudie.retrieve.components(component=component_descriptor))
-    if 'ociImage' in resource_types:
-        yield from {
-            pm.OciResourceGroup(
-                component_name=component.name,
-                component_version=None,
-                resource_name=resource.name
-            )
-            for component in components
-            for resource in product.v2.resources(
-                component=component,
-                resource_types=[cm.ResourceType.OCI_IMAGE],
-                resource_access_types=[cm.AccessType.OCI_REGISTRY],
-            )
+    artifact_groups: typing.Dict[str, pm.ArtifactGroup] = dict()
+    for component in components:
+        for resource in component.resources:
+
+            name = corresponding_resource_group_name(component, resource)
+
+            if name in artifact_groups:
+                artifact_groups[name].component_artifacts.append(
+                    pm.ComponentArtifacts(component, resource)
+                )
+
+            else:
+                rtype = resource.type
+                if isinstance(rtype, cm.ResourceType) and rtype.value == 'ociImage':
+                    artifact_groups[name] = pm.OciArtifactGroup(name)
+                if rtype == 'application/tar+vm-image-rootfs':
+                    artifact_groups[name] = pm.TarRootfsArtifactGroup(name)
+
+    return resource_groups
+
+    # if 'ociImage' in resource_types:
+    #     yield from {
+    #         pm.OciResourceGroup(
+    #             component_name=component.name,
+    #             resource_name=resource.name
+    #         )
+    #         for component in components
+    #         for resource in product.v2.resources(
+    #             component=component,
+    #             resource_types=[cm.ResourceType.OCI_IMAGE],
+    #             resource_access_types=[cm.AccessType.OCI_REGISTRY],
+    #         )
+    #     }
+    # if 'application/tar+vm-image-rootfs' in resource_types:
+    #     yield from {
+    #         pm.TarRootfsResourceGroup(
+    #             component_name=component.name,
+    #             component_version=component.version,
+    #             resource_name='gardenlinux'
+    #         ) for component in components
+    #         if component.name == 'github.com/gardenlinux/gardenlinux'
+    #     }
+
+def enum_triages(
+    result: pm.AnalysisResult
+) -> typing.Iterator[typing.Tuple[pm.Component, pm.Triage]]:
+    for component in result.components():
+        for vulnerability in component.vulnerabilities():
+            for triage in vulnerability.triages():
+                yield component, triage
+
+
+def enum_component_versions(
+    scan_result: pm.AnalysisResult,
+    component_name: str,
+) -> typing.Iterator[str]:
+    for component in scan_result.components():
+        if component.name() == component_name:
+            yield component.version()
+
+
+def wait_for_scans_to_finish(
+    scans: typing.Iterable[pm.AnalysisResult],
+    protecode_api: protecode.client.ProtecodeApi
+) -> typing.Generator[pm.AnalysisResult, None, None]:
+    for scan_result in scans:
+        product_id = scan_result.product_id()
+        logger.info(f'waiting for {product_id}')
+        yield protecode_api.wait_for_scan_result(product_id)
+        logger.info(f'finished waiting for {product_id}')
+
+
+@functools.lru_cache
+def _image_digest(image_reference: str) -> str:
+    oci_client = ccc.oci.oci_client()
+    return oci_client.to_digest_hash(
+        # image_reference=self.resource.access.imageReference,
+        image_reference=image_reference,
+    )
+
+
+def component_artifact_metadata(
+    component_artifact: pm.ComponentArtifacts,
+    omit_component_version: bool,
+    omit_resource_version: bool,
+):
+    metadata = {
+        'COMPONENT_NAME': component_artifact.component.name,
+    }
+    if not omit_component_version:
+        metadata.update({
+            'COMPONENT_VERSION': component_artifact.component.version,
+        })
+    match component_artifact.artifact.access:
+        case cm.OciAccess():
+            if not omit_resource_version:
+                img_ref_with_digest = _image_digest(
+                    image_reference=component_artifact.artifact.access.imageReference
+                )
+                digest = img_ref_with_digest.split('@')[-1]
+                metadata['IMAGE_REFERENCE'] = component_artifact.artifact.access.imageReference
+                metadata['IMAGE_VERSION'] = component_artifact.artifact.version
+                metadata['IMAGE_DIGEST'] = digest
+                metadata['DIGEST_IMAGE_REFERENCE'] = str(img_ref_with_digest)
+        case cm.S3Access():
+            if not omit_resource_version:
+                metadata['IMAGE_VERSION'] = component_artifact.artifact.version
+        case _:
+            raise NotImplementedError(component_artifact.artifact.access)
+
+    return metadata
+
+
+
+
+
+def copy_triages(
+    from_results: typing.Iterable[pm.AnalysisResult],
+    to_results: typing.Iterable[pm.AnalysisResult],
+    to_group_id: int,
+    protecode_api,
+):
+    '''Copy triages from a number of scan results to a single result.
+
+    Copied triages are deduplicated.
+    '''
+    # TODO: Comment
+    from_triages = collections.defaultdict(set)
+    for result in from_results:
+        for component, triage in enum_triages(result):
+            from_triages[component.name()].add(triage)
+
+    for to_result in to_results:
+        to_component_versions = {
+            component.name(): list(enum_component_versions(to_result, component.name()))
+            for component in to_result.components()
         }
-    if 'application/tar+vm-image-rootfs' in resource_types:
-        yield from {
-            pm.TarRootfsResourceGroup(
-                component_name=component.name,
-                component_version=component.version,
-                resource_name='gardenlinux'
-            ) for component in components
-            if component.name == 'github.com/gardenlinux/gardenlinux'
-        }
+
+        for component_name in from_triages:
+            for triage in from_triages[component_name]:
+                for component_version in to_component_versions[component_name]:
+                    protecode_api.add_triage(
+                        triage=triage,
+                        product_id=to_result.product_id(),
+                        group_id=to_group_id,
+                        component_version=component_version,
+                    )
